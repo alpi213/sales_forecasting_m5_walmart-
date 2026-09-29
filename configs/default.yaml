@@ -1,0 +1,74 @@
+# Single source of truth for paths and hyper-parameters.
+# Override any key from the CLI with --set key.subkey=value
+
+paths:
+  raw_dir: data/raw            # sales_train_validation.csv (or _evaluation), calendar.csv, sell_prices.csv
+  db_path: artifacts/m5.duckdb
+  artifacts_dir: artifacts
+  sales_file: sales_train_validation.csv
+
+data:
+  horizon: 28                  # forecast horizon (days)
+  min_train_days: 365          # drop feature rows older than this before the last training day
+  drop_before_release: true    # drop rows before a product's first sale
+
+features:
+  # All lags must be >= horizon so a single direct model can forecast the full horizon
+  # without recursion (no leakage for any of the 28 target days).
+  lags: [28, 35, 42, 56, 91, 182, 364]
+  rolling_windows: [7, 14, 28, 56, 182]   # rolling means over sales shifted by `horizon`
+  rolling_std_windows: [7, 28]
+  price_rolling_window: 28
+
+cv:
+  n_folds: 3                   # validation windows: the last `horizon` days, then shifted back by `horizon`
+  gap: 0                       # optional purge gap in days between train end and validation start
+
+lgbm:
+  objective: tweedie
+  tweedie_variance_power: 1.1
+  metric: rmse
+  learning_rate: 0.03
+  num_leaves: 127
+  min_data_in_leaf: 200
+  feature_fraction: 0.7
+  bagging_fraction: 0.8
+  bagging_freq: 1
+  lambda_l2: 1.0
+  max_bin: 255
+  num_threads: -1
+  verbose: -1
+  seed: 42
+  num_boost_round: 3000
+  early_stopping_rounds: 100
+
+patchtst:
+  lookback: 224                # 32 weeks of history
+  patch_len: 16
+  stride: 8
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  d_ff: 128
+  dropout: 0.2
+  use_series_embedding: true
+  loss: tweedie                # tweedie | mse
+  tweedie_power: 1.1
+  batch_size: 512
+  epochs: 20
+  lr: 0.001
+  weight_decay: 0.0001
+  sample_stride: 7             # take a training window every 7 days per series
+  max_series: null             # subsample series for quick runs (null = all)
+  early_stopping_patience: 3
+  seed: 42
+
+elasticity:
+  n_folds: 5
+  min_weeks_per_item: 40
+  max_items_per_category: null  # subsample for the Bayesian model; null = all
+  bayes:
+    draws: 1000
+    tune: 1000
+    chains: 2
+    target_accept: 0.9
