@@ -1,0 +1,6 @@
+src/m5/data/raw/*
+artifacts/
+*.duckdb
+__pycache__/
+*.egg-info/
+.venv/
