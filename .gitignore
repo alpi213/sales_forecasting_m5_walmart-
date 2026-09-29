@@ -3,4 +3,4 @@ artifacts/
 *.duckdb
 __pycache__/
 *.egg-info/
-.venv/
+venv_m5/
