@@ -3,7 +3,7 @@
 Stages are idempotent and read/write only through the DuckDB file and the artifacts directory,
 so they can be chained by any scheduler (cron, Airflow, GitHub Actions):
 
-    m5 make-synthetic            # small fake dataset in the M5 schema (for tests / smoke runs)
+    m5 make-synthetic            # small fake dataset in the M5 schema (-> data/synthetic)
     m5 build-db                  # validate CSVs -> DuckDB long tables -> SQL feature table
     m5 train-lgbm                # rolling-origin CV, then refit on all data and save the model
     m5 train-patchtst            # same protocol for the PyTorch transformer

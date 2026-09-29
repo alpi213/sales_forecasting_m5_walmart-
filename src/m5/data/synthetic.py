@@ -1,6 +1,6 @@
 """Generate a small dataset with the exact M5 schema.
 
-Purpose: run the whole pipeline end-to-end (tests, CI, smoke runs) without the 400 MB Kaggle
+Purpose: run the whole pipeline end-to-end (tests, CI) without the 400 MB Kaggle
 download, and check that the elasticity estimators recover a *known* elasticity.
 
 Schema produced (identical to the Kaggle files):

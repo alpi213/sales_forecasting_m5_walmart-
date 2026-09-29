@@ -17,7 +17,6 @@ rather than a notebook:
 ```bash
 pip install -e ".[torch,bayes,dev]"   # CPU torch; for a CUDA GPU use `make install-gpu` (see Makefile)
 pytest -q                      # unit tests on a synthetic dataset (no download needed)
-make smoke                     # every stage end-to-end on synthetic data (data/synthetic, artifacts/smoke), a few minutes on CPU
 ```
 
 pip's default `torch` wheel on Windows and Linux is CPU-only even on a machine with an NVIDIA GPU;
