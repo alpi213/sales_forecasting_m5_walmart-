@@ -14,7 +14,6 @@ so they can be chained by any scheduler (cron, Airflow, GitHub Actions):
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
@@ -34,11 +33,12 @@ def _common(p: argparse.ArgumentParser) -> None:
 def cmd_make_synthetic(a: argparse.Namespace) -> None:
     from m5.data.synthetic import generate
 
-    cfg = load_config(a.config, a.overrides)
-    out = Path(a.out or cfg["paths"]["raw_dir"])
+    load_config(a.config, a.overrides)  # validate only; the raw dir is deliberately NOT the default
+    out = Path(a.out)  # default data/synthetic, never data/raw: that would overwrite the Kaggle files
     with timed(log, f"synthetic data -> {out}"):
         d = generate(out, n_items_per_dept=a.items, n_days=a.days, seed=a.seed)
     log.info("%d series, %d days, %d price rows", len(d["sales"]), a.days, len(d["prices"]))
+    log.info("use it with: m5 build-db --set paths.raw_dir=%s", out)
 
 
 def cmd_build_db(a: argparse.Namespace) -> None:
@@ -160,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("make-synthetic"); _common(s)
-    s.add_argument("--out", default=None); s.add_argument("--items", type=int, default=12)
+    s.add_argument("--out", default="data/synthetic"); s.add_argument("--items", type=int, default=12)
     s.add_argument("--days", type=int, default=500); s.add_argument("--seed", type=int, default=0)
     s.set_defaults(fn=cmd_make_synthetic)
 
@@ -190,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         log.warning("interrupted")
         return 130
-    except Exception:  # noqa: BLE001 - top-level: log with traceback, non-zero exit for schedulers
+    except Exception:
         log.exception("stage %s failed", args.cmd)
         return 1
     return 0

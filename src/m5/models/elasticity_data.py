@@ -8,7 +8,7 @@ Panel columns
   item_id, dept_id, cat_id, store_id, state_id, wm_yr_wk, week_idx, units, price,
   snap_days, event_days, year, week_of_year,
   log_q = log1p(units), log_p = log(price),
-  lag_log_q_{1,2,4}, lag_log_p_1   (within item-store, previous full weeks)
+  lag_log_q_{1,2,4}                (within item-store, previous kept weeks)
 Only complete weeks (7 observed days) after the item's first sale are kept, and item-stores with
 fewer than `min_weeks` weeks are dropped.
 """
@@ -59,8 +59,7 @@ def build_weekly_panel(con: Any, last_day: int, min_weeks: int) -> pd.DataFrame:
     g = df.groupby("series")
     for lag in (1, 2, 4):
         df[f"lag_log_q_{lag}"] = g["log_q"].shift(lag)
-    df["lag_log_p_1"] = g["log_p"].shift(1)
-    df = df.dropna(subset=["lag_log_q_4", "lag_log_p_1"])
+    df = df.dropna(subset=["lag_log_q_4"])
 
     counts = df.groupby("series")["week_idx"].transform("size")
     df = df[counts >= min_weeks].reset_index(drop=True)

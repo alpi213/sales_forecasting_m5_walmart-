@@ -20,4 +20,4 @@ jobs:
       - run: pip install -e ".[torch,bayes]" --extra-index-url https://download.pytorch.org/whl/cpu
       - run: make smoke
       - uses: actions/upload-artifact@v4
-        with: { name: smoke-artifacts, path: artifacts/*.json }
+        with: { name: smoke-artifacts, path: artifacts/smoke/*.json }

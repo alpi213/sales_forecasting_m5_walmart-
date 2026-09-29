@@ -3,8 +3,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from m5.models.patchtst import PatchTST, PatchTSTConfig, tweedie_deviance  # noqa: E402
-from m5.models.torch_train import WindowDataset, release_days  # noqa: E402
+from m5.models.patchtst import PatchTST, PatchTSTConfig, tweedie_deviance
+from m5.models.torch_train import WindowDataset, release_days
 
 
 def test_forward_shape_and_positivity():
@@ -31,8 +31,11 @@ def test_window_dataset_respects_release():
     ds = WindowDataset(y, rel, lookback=20, horizon=5, t_max=100, stride=1)
     idx = ds.index
     assert (idx[idx[:, 0] == 0, 1] >= 30).all() and (idx[idx[:, 0] == 1, 1] >= 80).all()
-    xb, yb, i = ds[0]
-    assert xb.shape == (20,) and yb.shape == (5,)
+    xb, yb, i = ds.gather(torch.tensor([0, 1]))
+    assert xb.shape == (2, 20) and yb.shape == (2, 5) and i.tolist() == [0, 0]
+    t0 = int(idx[0, 1])
+    assert torch.equal(xb[0], torch.tensor(y[0, t0 - 20 : t0], dtype=torch.float32))
+    assert torch.equal(yb[0], torch.tensor(y[0, t0 : t0 + 5], dtype=torch.float32))
 
 
 def test_one_training_step_reduces_loss():

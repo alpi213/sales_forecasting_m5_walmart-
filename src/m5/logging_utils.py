@@ -8,10 +8,10 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Iterator
 
 _FMT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
 
@@ -30,8 +30,8 @@ def setup_logging(level: str = "INFO", log_dir: str | Path | None = None) -> Non
         fh.setFormatter(logging.Formatter(_FMT))
         root.addHandler(fh)
     # third-party noise
-    logging.getLogger("numba").setLevel(logging.WARNING)
-    logging.getLogger("pytensor").setLevel(logging.WARNING)
+    for noisy in ("numba", "pytensor", "arviz", "arviz_stats", "arviz_base"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 @contextmanager

@@ -1,8 +1,9 @@
 import numpy as np
+import pytest
 
 from m5.data.synthetic import TRUE_ELASTICITY
 from m5.models.elasticity_data import build_weekly_panel
-from m5.models.elasticity_dml import naive_loglog, partial_out_theta, run_dml
+from m5.models.elasticity_dml import partial_out_theta, run_dml
 
 
 def test_partial_out_theta_recovers_slope():
@@ -16,12 +17,13 @@ def test_partial_out_theta_recovers_slope():
 def test_panel_shape(cfg, db):
     con, last_day = db
     panel = build_weekly_panel(con, last_day, min_weeks=20)
-    assert {"log_q", "log_p", "lag_log_q_4", "lag_log_p_1", "snap_days"} <= set(panel.columns)
+    assert {"log_q", "log_p", "lag_log_q_4", "snap_days"} <= set(panel.columns)
     assert (panel["units"] >= 0).all() and (panel["price"] > 0).all()
     assert panel.groupby("series")["week_idx"].apply(lambda s: s.is_monotonic_increasing).all()
 
 
 def test_dml_recovers_category_elasticity(cfg, db):
+    pytest.importorskip("lightgbm")
     con, last_day = db
     panel = build_weekly_panel(con, last_day, min_weeks=20)
     out = run_dml(panel, n_folds=3, seed=0)

@@ -30,7 +30,6 @@ from m5.data.load import execute, run_sql
 log = logging.getLogger(__name__)
 
 CATEGORICAL = ["item_id", "dept_id", "cat_id", "store_id", "state_id", "event_type_1"]
-KEY_COLS = ["id", "day_idx", "sales"]
 
 
 def _shifted_frame(horizon: int, window: int) -> str:
@@ -162,7 +161,7 @@ class CategoryEncoder:
     def __init__(self, mapping: dict[str, dict[str, int]] | None = None):
         self.mapping = mapping or {}
 
-    def fit(self, df: pd.DataFrame, cols: list[str]) -> "CategoryEncoder":
+    def fit(self, df: pd.DataFrame, cols: list[str]) -> CategoryEncoder:
         for c in cols:
             values = sorted(df[c].astype(str).unique())
             self.mapping[c] = {v: i for i, v in enumerate(values)}
@@ -180,6 +179,6 @@ class CategoryEncoder:
             json.dump(self.mapping, f)
 
     @classmethod
-    def load(cls, path: str | Path) -> "CategoryEncoder":
+    def load(cls, path: str | Path) -> CategoryEncoder:
         with open(path) as f:
             return cls(json.load(f))

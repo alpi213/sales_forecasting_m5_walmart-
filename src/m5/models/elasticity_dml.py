@@ -1,11 +1,20 @@
 """Price elasticity via Double / Debiased Machine Learning (Chernozhukov et al., 2018).
 
-Model (partially linear):
-    log_q = theta * log_p + g(X) + eps
-    log_p = m(X) + v
-where X are confounders that move both price and demand: the item and store (fixed effects),
-seasonality (week of year, year), SNAP and event days, recent demand (lagged log_q), and the
-previous week's price. theta is the elasticity.
+Model (partially linear, with item-store fixed effects):
+    log_q[s,t] - mean_s(log_q) = theta * (log_p[s,t] - mean_s(log_p)) + g(X[s,t]) + eps
+    log_p[s,t] - mean_s(log_p) = m(X[s,t]) + v
+where s is an item-store series. The fixed effect is removed by the within-transform (subtracting
+the series mean), so theta is identified from *within-series* price variation only. X holds the
+remaining confounders: seasonality (week of year, year), SNAP and event days, recent demand
+(lagged log_q), and the store and department. theta is the short-run elasticity, conditional on
+last week's demand, the same quantity the Bayesian model estimates.
+
+Why the fixed effect is removed by demeaning and NOT by giving the learner `item_id`: in M5 the
+price is a deterministic function of (store, item, week), so a flexible learner with the series
+identity and a time index among its inputs reproduces log_p almost exactly (R2 = 0.998 on the
+real data), the residual v is pure noise, and theta collapses to zero. DML needs residual
+variation in the treatment given X; the controls therefore exclude the series identity, the time
+index and the lagged price, and the within-transform absorbs the level instead.
 
 Why not a plain log-log regression: prices are not set at random. Retailers cut prices when
 demand is expected to be weak (or run promotions in high-traffic weeks), so log_p is
@@ -23,30 +32,16 @@ Item-level estimates on a few dozen weeks are noisy; the hierarchical Bayesian m
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import KFold
 
 log = logging.getLogger(__name__)
 
-NUMERIC_CONTROLS = ["week_of_year", "year", "week_idx", "snap_days", "event_days",
-                    "lag_log_q_1", "lag_log_q_2", "lag_log_q_4", "lag_log_p_1"]
-CATEGORICAL_CONTROLS = ["item_id", "store_id"]
-
-
-@dataclass
-class ElasticityEstimate:
-    group: str
-    theta: float
-    se: float
-    n: int
-
-    @property
-    def ci95(self) -> tuple[float, float]:
-        return self.theta - 1.96 * self.se, self.theta + 1.96 * self.se
+NUMERIC_CONTROLS = ["week_of_year", "year", "snap_days", "event_days",
+                    "lag_log_q_1", "lag_log_q_2", "lag_log_q_4"]
+CATEGORICAL_CONTROLS = ["store_id", "dept_id"]
 
 
 def _design(panel: pd.DataFrame) -> tuple[np.ndarray, list[int]]:
@@ -58,23 +53,39 @@ def _design(panel: pd.DataFrame) -> tuple[np.ndarray, list[int]]:
     return X.to_numpy(), cat_idx
 
 
-def _learner(cat_idx: list[int], seed: int) -> HistGradientBoostingRegressor:
-    return HistGradientBoostingRegressor(
-        max_iter=300, learning_rate=0.05, max_leaf_nodes=31, min_samples_leaf=40,
-        l2_regularization=1.0, categorical_features=cat_idx, random_state=seed,
+def _learner(seed: int):
+    """Gradient-boosting nuisance learner. LightGBM rather than sklearn's
+    HistGradientBoostingRegressor because the latter caps categorical cardinality at 255 and
+    `item_id` has ~3k levels on the real data (the item fixed effect is the point)."""
+    import lightgbm as lgb  # lazy: the rest of the module stays importable without it
+
+    return lgb.LGBMRegressor(
+        n_estimators=300, learning_rate=0.05, num_leaves=31, min_child_samples=40,
+        reg_lambda=1.0, random_state=seed, n_jobs=-1, verbose=-1,
     )
 
 
+def within_transform(panel: pd.DataFrame, cols: tuple[str, ...] = ("log_q", "log_p")) -> pd.DataFrame:
+    """Subtract the item-store mean from each column (fixed-effects within-transform)."""
+    key = panel["store_id"].astype(str) + "|" + panel["item_id"].astype(str)
+    out = panel.copy()
+    for c in cols:
+        out[c] = panel[c] - panel.groupby(key)[c].transform("mean")
+    return out
+
+
 def cross_fit_residuals(panel: pd.DataFrame, n_folds: int = 5, seed: int = 0) -> pd.DataFrame:
-    """Add columns y_res (log_q - g_hat) and d_res (log_p - m_hat), each out-of-fold."""
+    """Add columns y_res (log_q - g_hat) and d_res (log_p - m_hat), each out-of-fold, where
+    log_q and log_p are first demeaned within item-store."""
     X, cat_idx = _design(panel)
-    y = panel["log_q"].to_numpy(dtype=float)
-    d = panel["log_p"].to_numpy(dtype=float)
+    within = within_transform(panel)
+    y = within["log_q"].to_numpy(dtype=float)
+    d = within["log_p"].to_numpy(dtype=float)
     y_hat, d_hat = np.zeros_like(y), np.zeros_like(d)
     kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
     for k, (tr, te) in enumerate(kf.split(X)):
-        g = _learner(cat_idx, seed + k).fit(X[tr], y[tr])
-        m = _learner(cat_idx, seed + 100 + k).fit(X[tr], d[tr])
+        g = _learner(seed + k).fit(X[tr], y[tr], categorical_feature=cat_idx)
+        m = _learner(seed + 100 + k).fit(X[tr], d[tr], categorical_feature=cat_idx)
         y_hat[te], d_hat[te] = g.predict(X[te]), m.predict(X[te])
         log.info("cross-fit fold %d/%d done", k + 1, n_folds)
     out = panel.copy()
@@ -105,7 +116,8 @@ def estimate_by_group(res: pd.DataFrame, key: str) -> pd.DataFrame:
 
 
 def naive_loglog(panel: pd.DataFrame, key: str) -> pd.DataFrame:
-    """Uncontrolled log-log slope, reported to show the bias DML removes."""
+    """Uncontrolled pooled log-log slope (no fixed effects, no controls), reported to show the
+    cross-sectional bias DML removes: cheap items sell more, which is not an elasticity."""
     rows = []
     for g, sub in panel.groupby(key):
         x, y = sub["log_p"].to_numpy(), sub["log_q"].to_numpy()

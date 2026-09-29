@@ -19,35 +19,62 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader, Dataset
 
 from m5.data.load import load_calendar, load_prices, load_wide
-from m5.evaluation.splits import Fold, rolling_origin_folds
+from m5.evaluation.splits import rolling_origin_folds
 from m5.evaluation.wrmsse import WRMSSEResult, dollar_sales_last_days, wrmsse
-from m5.models.patchtst import PatchTST, PatchTSTConfig, count_parameters, receptive_field_note, tweedie_deviance
+from m5.models.patchtst import (
+    PatchTST,
+    PatchTSTConfig,
+    count_parameters,
+    receptive_field_note,
+    tweedie_deviance,
+)
 
 log = logging.getLogger(__name__)
 
 
-class WindowDataset(Dataset):
-    """All (series, end) windows with `lookback` history and `horizon` targets inside [0, t_max)."""
+class WindowDataset:
+    """All (series, end) windows with `lookback` history and `horizon` targets inside [0, t_max).
 
-    def __init__(self, y: np.ndarray, release: np.ndarray, lookback: int, horizon: int, t_max: int, stride: int):
-        self.y = torch.from_numpy(y.astype(np.float32))
+    The dense sales tensor lives on `device` and a batch is one advanced-indexing gather from
+    it, so there is no per-sample Python work (a DataLoader with per-sample `__getitem__` costs
+    ~1M Python calls per epoch here).
+    """
+
+    def __init__(
+        self, y: np.ndarray, release: np.ndarray, lookback: int, horizon: int, t_max: int, stride: int,
+        device: torch.device | str = "cpu",
+    ):
+        self.y = torch.from_numpy(y.astype(np.float32)).to(device)
         self.lookback, self.horizon = lookback, horizon
-        idx = []
         ends = np.arange(t_max - horizon, lookback - 1, -stride)  # window end t: history [t-L, t), target [t, t+H)
-        for i in range(y.shape[0]):
-            ok = ends[ends - lookback >= release[i]]
-            idx.extend((i, int(t)) for t in ok)
-        self.index = np.array(idx, dtype=np.int64)
+        # `ends` is decreasing; the windows allowed for series i are the first n_ok[i] entries
+        # (those with end - lookback >= release[i], i.e. history starting after the release day)
+        n_ok = np.searchsorted(-ends, -(np.asarray(release) + lookback), side="right")
+        series = np.repeat(np.arange(y.shape[0]), n_ok)
+        t_end = np.concatenate([ends[:k] for k in n_ok]) if len(series) else np.zeros(0, dtype=np.int64)
+        self.index = np.column_stack([series, t_end]).astype(np.int64)
+        self._index_t = torch.from_numpy(self.index).to(device)
+        self._x_off = torch.arange(-lookback, 0, device=device)
+        self._y_off = torch.arange(0, horizon, device=device)
 
     def __len__(self) -> int:
         return len(self.index)
 
-    def __getitem__(self, k: int):
-        i, t = self.index[k]
-        return self.y[i, t - self.lookback : t], self.y[i, t : t + self.horizon], torch.tensor(i)
+    def gather(self, rows: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """(x, y, series_idx) for the windows at `rows` of `self.index`, on the dataset's device."""
+        sel = self._index_t[rows.to(self._index_t.device)]
+        i, t = sel[:, 0], sel[:, 1]
+        x = self.y[i[:, None], t[:, None] + self._x_off]
+        y = self.y[i[:, None], t[:, None] + self._y_off]
+        return x, y, i
+
+    def batches(self, batch_size: int, shuffle: bool):
+        n = len(self)
+        order = torch.randperm(n) if shuffle else torch.arange(n)
+        for start in range(0, n, batch_size):
+            yield self.gather(order[start : start + batch_size])
 
 
 def release_days(y: np.ndarray) -> np.ndarray:
@@ -104,21 +131,20 @@ def train_model(
     model = PatchTST(mcfg).to(dev)
     log.info("PatchTST %s | %d params | %s", tag, count_parameters(model), receptive_field_note(mcfg))
 
-    ds = WindowDataset(y, release, mcfg.lookback, mcfg.horizon, t_train_end, p["sample_stride"])
+    ds = WindowDataset(y, release, mcfg.lookback, mcfg.horizon, t_train_end, p["sample_stride"], device=dev)
     log.info("training windows: %d", len(ds))
     if len(ds) == 0:
         raise ValueError("no training windows: reduce lookback or increase history")
-    dl = DataLoader(ds, batch_size=p["batch_size"], shuffle=True, drop_last=False, num_workers=0)
+    steps_per_epoch = -(-len(ds) // p["batch_size"])
     opt = torch.optim.AdamW(model.parameters(), lr=p["lr"], weight_decay=p["weight_decay"])
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=p["lr"], total_steps=max(1, p["epochs"] * len(dl)))
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=p["lr"], total_steps=max(1, p["epochs"] * steps_per_epoch))
     loss_fn = _loss_fn(cfg)
 
     best, best_state, bad, history = np.inf, None, 0, []
     for epoch in range(p["epochs"]):
         model.train()
         tot, n = 0.0, 0
-        for xb, yb, ib in dl:
-            xb, yb, ib = xb.to(dev), yb.to(dev), ib.to(dev)
+        for xb, yb, ib in ds.batches(p["batch_size"], shuffle=True):
             opt.zero_grad(set_to_none=True)
             loss = loss_fn(yb, model(xb, ib))
             if not torch.isfinite(loss):
@@ -127,7 +153,7 @@ def train_model(
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             sched.step()
-            tot += float(loss) * len(xb)
+            tot += loss.item() * len(xb)
             n += len(xb)
         rec = {"epoch": epoch, "train_loss": tot / n}
         if y_valid is not None:
@@ -203,9 +229,3 @@ def fit_final_and_predict(con: Any, cfg: dict[str, Any], last_day: int, artifact
     sub.insert(0, "id", meta["id"].to_numpy())
     return sub
 
-
-def load_model(path: str | Path) -> PatchTST:
-    ckpt = torch.load(path, map_location="cpu")
-    model = PatchTST(PatchTSTConfig(**ckpt["config"]))
-    model.load_state_dict(ckpt["state_dict"])
-    return model.eval()

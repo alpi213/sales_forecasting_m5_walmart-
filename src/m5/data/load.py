@@ -42,7 +42,9 @@ def connect(db_path: str | Path):
 
 
 def is_duckdb(con: Any) -> bool:
-    return type(con).__module__.startswith("duckdb")
+    # The connection class moved between modules across duckdb releases
+    # ("duckdb", "duckdb.duckdb", "_duckdb" in 1.5), so match on the substring.
+    return "duckdb" in type(con).__module__.lower()
 
 
 def run_sql(con: Any, sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:

@@ -72,7 +72,6 @@ def prepare(panel: pd.DataFrame, max_items: int | None = None, seed: int = 0) ->
 def build_model(d: dict[str, Any]):
     import pymc as pm
 
-    n_s, n_c, n_d = len(d["s_levels"]), len(d["cat_levels"]), len(d["dept_levels"])
     coords = {"series": d["s_levels"], "cat": d["cat_levels"], "dept": d["dept_levels"], "fourier": list(range(4))}
     with pm.Model(coords=coords) as model:
         mu_beta = pm.Normal("mu_beta", mu=-1.0, sigma=1.0, dims="cat")
@@ -114,18 +113,38 @@ def fit(d: dict[str, Any], draws: int, tune: int, chains: int, target_accept: fl
     return model, idata
 
 
-def summarise(idata, d: dict[str, Any]) -> dict[str, pd.DataFrame]:
+def _summary(idata, var_names: list[str]) -> pd.DataFrame:
+    """`arviz.summary` with a 95% HDI, normalised to the columns
+    (var, mean, sd, hdi_low, hdi_high, r_hat) across arviz < 1 (`hdi_prob=`, columns `hdi_2.5%`)
+    and arviz >= 1 (`ci_prob=`, columns `hdi95_lb`)."""
+    import inspect
+
     import arviz as az
 
-    cat = az.summary(idata, var_names=["mu_beta"], hdi_prob=0.95).reset_index()
+    if "ci_prob" in inspect.signature(az.summary).parameters:
+        s = az.summary(idata, var_names=var_names, ci_prob=0.95, ci_kind="hdi")
+    else:
+        s = az.summary(idata, var_names=var_names, hdi_prob=0.95)
+    s = (s.to_dataframe() if hasattr(s, "to_dataframe") else pd.DataFrame(s)).reset_index()
+    s = s.rename(columns={
+        s.columns[0]: "var",
+        "hdi_2.5%": "hdi_low", "hdi_97.5%": "hdi_high", "hdi95_lb": "hdi_low", "hdi95_ub": "hdi_high",
+    })
+    if "r_hat" not in s.columns:  # single-chain / ADVI draws have no r_hat
+        s["r_hat"] = np.nan
+    return s
+
+
+def summarise(idata, d: dict[str, Any]) -> dict[str, pd.DataFrame]:
+    cat = _summary(idata, ["mu_beta"])
     cat["cat_id"] = d["cat_levels"]
-    series = az.summary(idata, var_names=["beta"], hdi_prob=0.95).reset_index()
+    series = _summary(idata, ["beta"])
     series["series"] = d["s_levels"]
     series[["store_id", "item_id"]] = series["series"].str.split("|", expand=True)
-    hyper = az.summary(idata, var_names=["tau_beta", "rho", "g_snap", "g_event", "sigma"], hdi_prob=0.95)
+    hyper = _summary(idata, ["tau_beta", "rho", "g_snap", "g_event", "sigma"])
     if hasattr(idata, "sample_stats") and "diverging" in idata.sample_stats:
         n_div = int(idata.sample_stats["diverging"].sum())
         log.info("divergences: %d", n_div)
-    return {"category": cat[["cat_id", "mean", "sd", "hdi_2.5%", "hdi_97.5%", "r_hat"]],
-            "series": series[["store_id", "item_id", "mean", "sd", "hdi_2.5%", "hdi_97.5%"]],
-            "hyper": hyper.reset_index()}
+    return {"category": cat[["cat_id", "mean", "sd", "hdi_low", "hdi_high", "r_hat"]],
+            "series": series[["store_id", "item_id", "mean", "sd", "hdi_low", "hdi_high"]],
+            "hyper": hyper[["var", "mean", "sd", "hdi_low", "hdi_high", "r_hat"]]}

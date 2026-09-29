@@ -26,8 +26,8 @@ import math
 from dataclasses import dataclass
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 
 @dataclass
@@ -68,7 +68,7 @@ class PatchTST(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.encoder = nn.TransformerEncoder(layer, num_layers=cfg.n_layers)
+        self.encoder = nn.TransformerEncoder(layer, num_layers=cfg.n_layers, enable_nested_tensor=False)
         self.final_norm = nn.LayerNorm(cfg.d_model)
         self.head = nn.Sequential(
             nn.Flatten(start_dim=1),

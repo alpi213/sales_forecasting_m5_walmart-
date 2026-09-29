@@ -63,7 +63,7 @@ def _group_sum_1d(values: np.ndarray, meta: pd.DataFrame, keys: list[str]) -> np
 
 def scale_factor(train: np.ndarray) -> np.ndarray:
     """Per-series mean squared one-step difference from the first non-zero observation."""
-    n, t = train.shape
+    t = train.shape[1]
     first_nz = np.argmax(train != 0, axis=1)
     has_sales = (train != 0).any(axis=1)
     diffs = np.diff(train, axis=1) ** 2
